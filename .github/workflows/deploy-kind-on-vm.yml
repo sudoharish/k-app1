@@ -1,0 +1,250 @@
+name: Provision Kind Cluster on Remote VM
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (will use environment variables and secrets)'
+        required: true
+        type: string
+      cluster_name:
+        description: 'Kind cluster name'
+        required: true
+        type: string
+
+env:
+  # Use the cluster name provided by the user
+  CLUSTER_NAME: ${{ inputs.cluster_name }}
+
+jobs:
+  provision-kind-cluster:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Validate environment variables
+      run: |
+        echo "Using environment: ${{ inputs.environment }}"
+        echo "Cluster name: ${{ inputs.cluster_name }}"
+        echo "VM Host: ${{ vars.VM_HOST }}"
+        echo "VM User: ${{ vars.VM_USER }}"
+        
+        # Check required variables are set
+        if [ -z "${{ vars.VM_HOST }}" ]; then
+          echo "❌ VM_HOST environment variable is not set"
+          exit 1
+        fi
+        if [ -z "${{ vars.VM_USER }}" ]; then
+          echo "❌ VM_USER environment variable is not set"  
+          exit 1
+        fi
+        echo "✅ All required environment variables are configured"
+
+    - name: Setup SSH key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ vars.VM_HOST }} >> ~/.ssh/known_hosts
+
+    - name: Test SSH connection
+      run: |
+        ssh -o ConnectTimeout=10 ${{ vars.VM_USER }}@${{ vars.VM_HOST }} "echo 'SSH connection successful'"
+
+    - name: Install Docker and Kind on VM
+      run: |
+        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << 'EOF'
+        # Update system
+        sudo apt-get update
+        
+        # Install Docker if not already installed
+        if ! command -v docker &> /dev/null; then
+          echo "Installing Docker..."
+          sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+          sudo usermod -aG docker $USER
+        else
+          echo "Docker is already installed"
+        fi
+        
+        # Install kubectl if not already installed
+        if ! command -v kubectl &> /dev/null; then
+          echo "Installing kubectl..."
+          ARCH=$(dpkg --print-architecture)
+          case $ARCH in
+            amd64)
+              KUBECTL_ARCH="amd64"
+              ;;
+            arm64)
+              KUBECTL_ARCH="arm64"
+              ;;
+            armhf)
+              KUBECTL_ARCH="arm"
+              ;;
+            *)
+              echo "Unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+          echo "Detected architecture: $ARCH, downloading kubectl for: $KUBECTL_ARCH"
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${KUBECTL_ARCH}/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          rm kubectl
+        else
+          echo "kubectl is already installed"
+        fi
+        
+        # Install Kind if not already installed
+        if ! command -v kind &> /dev/null; then
+          echo "Installing Kind..."
+          ARCH=$(dpkg --print-architecture)
+          case $ARCH in
+            amd64)
+              KIND_ARCH="amd64"
+              ;;
+            arm64)
+              KIND_ARCH="arm64"
+              ;;
+            armhf)
+              KIND_ARCH="arm64"
+              ;;
+            *)
+              echo "Unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+          echo "Detected architecture: $ARCH, downloading kind for: $KIND_ARCH"
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-${KIND_ARCH}"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+        else
+          echo "Kind is already installed"
+        fi
+        EOF
+
+    - name: Create Kind cluster configuration
+      run: |
+        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
+        cat > kind-config.yaml << 'YAML_EOF'
+        kind: Cluster
+        apiVersion: kind.x-k8s.io/v1alpha4
+        name: ${{ env.CLUSTER_NAME }}
+        nodes:
+        - role: control-plane
+          kubeadmConfigPatches:
+          - |
+            kind: InitConfiguration
+            nodeRegistration:
+              kubeletExtraArgs:
+                node-labels: "ingress-ready=true"
+          extraPortMappings:
+          - containerPort: 80
+            hostPort: 80
+            protocol: TCP
+          - containerPort: 443
+            hostPort: 443
+            protocol: TCP
+        - role: worker
+        - role: worker
+        YAML_EOF
+        EOF
+
+    - name: Delete existing cluster (if exists)
+      run: |
+        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
+        if kind get clusters | grep -q "^${{ env.CLUSTER_NAME }}$"; then
+          echo "Deleting existing cluster: ${{ env.CLUSTER_NAME }}"
+          kind delete cluster --name ${{ env.CLUSTER_NAME }}
+        else
+          echo "No existing cluster found with name: ${{ env.CLUSTER_NAME }}"
+        fi
+        EOF
+
+    - name: Create Kind cluster
+      run: |
+        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
+        echo "Creating Kind cluster: ${{ env.CLUSTER_NAME }}"
+        kind create cluster --config kind-config.yaml --wait 300s
+        EOF
+
+    - name: Verify cluster and configure kubectl
+      run: |
+        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
+        # Set kubectl context to the new cluster
+        kubectl cluster-info --context kind-${{ env.CLUSTER_NAME }}
+        
+        # Verify nodes are ready
+        echo "Waiting for nodes to be ready..."
+        kubectl wait --for=condition=Ready nodes --all --timeout=300s --context kind-${{ env.CLUSTER_NAME }}
+        
+        # Display cluster information
+        echo "=== Cluster Information ==="
+        kubectl get nodes --context kind-${{ env.CLUSTER_NAME }}
+        kubectl get pods -A --context kind-${{ env.CLUSTER_NAME }}
+        
+        echo "=== Cluster successfully created with name: ${{ env.CLUSTER_NAME }} ==="
+        EOF
+
+    - name: Install basic cluster components (optional)
+      run: |
+        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << 'EOF'
+        # Install NGINX Ingress Controller
+        echo "Installing NGINX Ingress Controller..."
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml --context kind-${{ env.CLUSTER_NAME }}
+        
+        # Wait for ingress controller to be ready
+        kubectl wait --namespace ingress-nginx \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/component=controller \
+          --timeout=90s \
+          --context kind-${{ env.CLUSTER_NAME }}
+        
+        echo "NGINX Ingress Controller installed successfully"
+        EOF
+
+    - name: Save and configure kubeconfig
+      run: |
+        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
+        # Create .kube directory if it doesn't exist
+        mkdir -p ~/.kube
+        
+        # Export kubeconfig for the cluster
+        kind get kubeconfig --name ${{ env.CLUSTER_NAME }} > ~/.kube/${{ env.CLUSTER_NAME }}-config
+        
+        # If KUBECONFIG environment variable is set, also save there
+        if [ -n "${{ vars.KUBECONFIG_PATH }}" ]; then
+          echo "Saving kubeconfig to custom path: ${{ vars.KUBECONFIG_PATH }}"
+          mkdir -p "$(dirname "${{ vars.KUBECONFIG_PATH }}")"
+          kind get kubeconfig --name ${{ env.CLUSTER_NAME }} > "${{ vars.KUBECONFIG_PATH }}"
+        fi
+        
+        # Set as default kubeconfig if specified
+        if [ "${{ vars.SET_DEFAULT_KUBECONFIG }}" = "true" ]; then
+          echo "Setting as default kubeconfig"
+          kind get kubeconfig --name ${{ env.CLUSTER_NAME }} > ~/.kube/config
+        fi
+        
+        echo "Kubeconfig saved to ~/.kube/${{ env.CLUSTER_NAME }}-config"
+        
+        # Display connection information
+        echo "=== Connection Information ==="
+        echo "Environment: ${{ inputs.environment }}"
+        echo "VM Host: ${{ vars.VM_HOST }}"
+        echo "Cluster Name: ${{ env.CLUSTER_NAME }}"
+        echo "Context: kind-${{ env.CLUSTER_NAME }}"
+        echo "Kubeconfig: ~/.kube/${{ env.CLUSTER_NAME }}-config"
+        if [ -n "${{ vars.KUBECONFIG_PATH }}" ]; then
+          echo "Custom Kubeconfig: ${{ vars.KUBECONFIG_PATH }}"
+        fi
+        EOF
+
+    - name: Cleanup SSH
+      if: always()
+      run: |
+        rm -f ~/.ssh/id_rsa
