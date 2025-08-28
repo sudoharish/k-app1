@@ -47,6 +47,72 @@ jobs:
           echo "Error: cluster_name must contain only alphanumeric characters and hyphens"
           exit 1
         fi
+    
+    - name: Install tweetsodium
+      run: npm install tweetsodium
+
+    # --- Ensure Environment Exists ---
+    - name: Ensure GitHub Environment
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+        script: |
+          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
+          try {
+            await github.rest.repos.getEnvironment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              environment_name: envName
+            });
+            console.log(`✅ Environment ${envName} already exists`);
+          } catch (error) {
+            if (error.status === 404) {
+              await github.rest.repos.createOrUpdateEnvironment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                environment_name: envName
+              });
+              console.log(`✅ Created environment: ${envName}`);
+            } else {
+              throw error;
+            }
+          }
+
+    # --- Store Secrets in Environment ---
+    - name: Set CLUSTER_NAME Secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: CLUSTER_NAME
+        value: ${{ github.event.inputs.cluster_name }}
+        location: env:ENV_${{ github.event.inputs.cluster_name }}
+        pa_token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
+    - name: Set VM_USER Secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: VM_USER
+        value: ${{ github.event.inputs.vm_user }}
+        location: env:ENV_${{ github.event.inputs.cluster_name }}
+        pa_token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
+    - name: Set VM_HOST Secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: VM_HOST
+        value: ${{ github.event.inputs.vm_host }}
+        location: env:ENV_${{ github.event.inputs.cluster_name }}
+        pa_token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
+    - name: Set VM_KEY Secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: VM_KEY
+        value: ${{ github.event.inputs.vm_key }}
+        location: env:ENV_${{ github.event.inputs.cluster_name }}
+        pa_token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
+
+          
 
     - name: Setup SSH key
       run: |
@@ -278,84 +344,22 @@ jobs:
         echo "Cluster is accessible from external network"
         
 
-    - name: Install tweetsodium
-      run: npm install tweetsodium
-
-    # --- Ensure Environment Exists ---
-    - name: Ensure GitHub Environment
-      uses: actions/github-script@v7
-      with:
-        github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-        script: |
-          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
-          try {
-            await github.rest.repos.getEnvironment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              environment_name: envName
-            });
-            console.log(`✅ Environment ${envName} already exists`);
-          } catch (error) {
-            if (error.status === 404) {
-              await github.rest.repos.createOrUpdateEnvironment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                environment_name: envName
-              });
-              console.log(`✅ Created environment: ${envName}`);
-            } else {
-              throw error;
-            }
-          }
-
-    # --- Store Secrets in Environment ---
-    - name: Set CLUSTER_NAME Secret
-      uses: gliech/create-github-secret-action@v1
-      with:
-        name: CLUSTER_NAME
-        value: ${{ github.event.inputs.cluster_name }}
-        environment: ENV_${{ github.event.inputs.cluster_name }}
-        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-
-    - name: Set VM_USER Secret
-      uses: gliech/create-github-secret-action@v1
-      with:
-        name: VM_USER
-        value: ${{ github.event.inputs.vm_user }}
-        environment: ENV_${{ github.event.inputs.cluster_name }}
-        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-
-    - name: Set VM_HOST Secret
-      uses: gliech/create-github-secret-action@v1
-      with:
-        name: VM_HOST
-        value: ${{ github.event.inputs.vm_host }}
-        environment: ENV_${{ github.event.inputs.cluster_name }}
-        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-
-    - name: Set VM_KEY Secret
-      uses: gliech/create-github-secret-action@v1
-      with:
-        name: VM_KEY
-        value: ${{ github.event.inputs.vm_key }}
-        environment: ENV_${{ github.event.inputs.cluster_name }}
-        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
     - name: Set KUBECONFIG Secret
       uses: gliech/create-github-secret-action@v1
       with:
         name: KUBECONFIG
         value: ${{ secrets.KUBECONFIG_CONTENT }}
-        environment: ENV_${{ github.event.inputs.cluster_name }}
-        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+        location: env:ENV_${{ github.event.inputs.cluster_name }}
+        pa_token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
     - name: Set CLUSTER_ENDPOINT Secret
       uses: gliech/create-github-secret-action@v1
       with:
         name: CLUSTER_ENDPOINT
         value: https://${{ github.event.inputs.vm_host }}:6443
-        environment: ENV_${{ github.event.inputs.cluster_name }}
-        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+        location: env:ENV_${{ github.event.inputs.cluster_name }}
+        pa_token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
       
     - name: Cleanup
