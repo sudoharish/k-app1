@@ -310,89 +310,67 @@ jobs:
             }
           }
 
-    - name: Set environment variables and secrets
-      uses: actions/github-script@v7
-      with:
-        github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-        script: |
-          const fs = require('fs');
-          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
-          
-          // Read kubeconfig content
-          const kubeconfigContent = fs.readFileSync('./kubeconfig-temp.yaml', 'utf8');
-          
-          // Function to create/update environment secret
-          async function createSecret(secretName, secretValue) {
-            try {
-              // Get public key for encryption
-              const publicKeyResponse = await github.rest.actions.getEnvironmentPublicKey({
-                repository_id: context.payload.repository.id,
-                environment_name: envName
-              });
-              
-              // Encrypt the secret value
-              const sodium = require('tweetsodium');
-              const key = publicKeyResponse.data.key;
-              const keyBytes = Buffer.from(key, 'base64');
-              const messageBytes = Buffer.from(secretValue);
-              const encryptedBytes = sodium.seal(messageBytes, keyBytes);
-              const encrypted = Buffer.from(encryptedBytes).toString('base64');
-              
-              // Create or update the secret
-              await github.rest.actions.createOrUpdateEnvironmentSecret({
-                repository_id: context.payload.repository.id,
-                environment_name: envName,
-                secret_name: secretName,
-                encrypted_value: encrypted,
-                key_id: publicKeyResponse.data.key_id
-              });
-              
-              console.log(`Set secret: ${secretName}`);
-            } catch (error) {
-              console.error(`Failed to set secret ${secretName}:`, error.message);
-              throw error;
-            }
-          }
-          
-          // Function to create/update environment variable
-          async function createVariable(variableName, variableValue) {
-            try {
-              await github.rest.actions.createEnvironmentVariable({
-                repository_id: context.payload.repository.id,
-                environment_name: envName,
-                name: variableName,
-                value: variableValue
-              });
-              console.log(`Set variable: ${variableName}`);
-            } catch (error) {
-              if (error.status === 409) {
-                // Variable exists, update it
-                await github.rest.actions.updateEnvironmentVariable({
-                  repository_id: context.payload.repository.id,
-                  environment_name: envName,
-                  name: variableName,
-                  value: variableValue
-                });
-                console.log(`Updated variable: ${variableName}`);
-              } else {
-                console.error(`Failed to set variable ${variableName}:`, error.message);
-                throw error;
-              }
-            }
-          }
-          
-          // Set secrets (sensitive data)
-          await createSecret('VM_KEY', '${{ github.event.inputs.vm_key }}');
-          await createSecret('KUBECONFIG', kubeconfigContent);
-          
-          // Set variables (non-sensitive data)
-          await createVariable('CLUSTER_NAME', '${{ github.event.inputs.cluster_name }}');
-          await createVariable('VM_USER', '${{ github.event.inputs.vm_user }}');
-          await createVariable('VM_HOST', '${{ github.event.inputs.vm_host }}');
-          await createVariable('CLUSTER_ENDPOINT', `https://${{ github.event.inputs.vm_host }}:6443`);
+    - name: Read kubeconfig into env
+      id: read_kube
+      run: |
+        echo "KUBECONFIG_CONTENT<<EOF" >> $GITHUB_ENV
+        cat ./kubeconfig-temp.yaml >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
 
-    - name: Install tweetsodium dependency
-      run: npm install tweetsodium
+    - name: Set VM_KEY secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: VM_KEY
+        value: ${{ github.event.inputs.vm_key }}
+        repository: ${{ github.repository }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
+    - name: Set KUBECONFIG secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: KUBECONFIG
+        value: ${{ env.KUBECONFIG_CONTENT }}
+        repository: ${{ github.repository }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
+    - name: Set CLUSTER_NAME variable
+      uses: gliech/create-github-variable-action@v1
+      with:
+        name: CLUSTER_NAME
+        value: ${{ github.event.inputs.cluster_name }}
+        repository: ${{ github.repository }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
+    - name: Set VM_USER variable
+      uses: gliech/create-github-variable-action@v1
+      with:
+        name: VM_USER
+        value: ${{ github.event.inputs.vm_user }}
+        repository: ${{ github.repository }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
+    - name: Set VM_HOST variable
+      uses: gliech/create-github-variable-action@v1
+      with:
+        name: VM_HOST
+        value: ${{ github.event.inputs.vm_host }}
+        repository: ${{ github.repository }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
+    - name: Set CLUSTER_ENDPOINT variable
+      uses: gliech/create-github-variable-action@v1
+      with:
+        name: CLUSTER_ENDPOINT
+        value: https://${{ github.event.inputs.vm_host }}:6443
+        repository: ${{ github.repository }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+
       
     - name: Cleanup
       if: always()
