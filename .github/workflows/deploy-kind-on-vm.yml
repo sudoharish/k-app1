@@ -198,7 +198,7 @@ jobs:
         apiVersion: kind.x-k8s.io/v1alpha4
         name: ${{ github.event.inputs.cluster_name }}
         networking:
-          apiServerAddress: "0.0.0.0"
+          apiServerAddress: "do.himalyan.top"
           apiServerPort: 6443
         nodes:
         - role: control-plane
