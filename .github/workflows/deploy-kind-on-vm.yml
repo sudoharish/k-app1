@@ -51,36 +51,74 @@ jobs:
     - name: Setup SSH key
       run: |
         mkdir -p ~/.ssh
-        echo "${{ github.event.inputs.vm_key }}" > ~/.ssh/vm_key
+        # Write the SSH key with proper formatting
+        printf '%s\n' "${{ github.event.inputs.vm_key }}" > ~/.ssh/vm_key
+        # Ensure proper permissions
         chmod 600 ~/.ssh/vm_key
-        ssh-keyscan -H ${{ github.event.inputs.vm_host }} >> ~/.ssh/known_hosts
+        # Verify key format
+        ssh-keygen -l -f ~/.ssh/vm_key || (echo "Invalid SSH key format" && exit 1)
+        # Add host to known_hosts
+        ssh-keyscan -H ${{ github.event.inputs.vm_host }} >> ~/.ssh/known_hosts || echo "Warning: Could not add host to known_hosts"
 
     - name: Test SSH connection
       run: |
-        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} "echo 'SSH connection successful'"
+        echo "Testing SSH connection..."
+        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} "echo 'SSH connection successful'" || (
+          echo "SSH connection failed. Debugging..."
+          echo "SSH key fingerprint:"
+          ssh-keygen -l -f ~/.ssh/vm_key
+          echo "Attempting connection with verbose output:"
+          ssh -v -i ~/.ssh/vm_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} "echo 'test'" 2>&1 | head -20
+          exit 1
+        )
 
     - name: Install dependencies on VM
       run: |
-        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} << 'EOF'
+        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} << 'EOF'
           set -e
           
           echo "Updating system packages..."
-          sudo apt-get update
+          sudo apt-get update -y
           
           # Install Docker if not already installed
           if ! command -v docker &> /dev/null; then
             echo "Installing Docker..."
-            sudo apt-get install -y ca-certificates curl gnupg lsb-release
+            # Remove any old Docker packages
+            sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
+            
+            # Install prerequisites
+            sudo apt-get install -y \
+              ca-certificates \
+              curl \
+              gnupg \
+              lsb-release
+            
+            # Add Docker's official GPG key
             sudo mkdir -p /etc/apt/keyrings
             curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-            sudo apt-get update
+            
+            # Set up repository
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+              $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            
+            # Install Docker Engine
+            sudo apt-get update -y
             sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+            
+            # Add user to docker group
             sudo usermod -aG docker $USER
+            
+            # Enable and start Docker
             sudo systemctl enable docker
             sudo systemctl start docker
+            
+            # Wait for Docker to be ready
+            sleep 5
+            sudo docker version
           else
             echo "Docker is already installed"
+            docker --version
           fi
           
           # Install kubectl if not already installed
@@ -92,6 +130,7 @@ jobs:
           else
             echo "kubectl is already installed"
           fi
+          kubectl version --client
           
           # Install Kind if not already installed
           if ! command -v kind &> /dev/null; then
@@ -102,6 +141,7 @@ jobs:
           else
             echo "Kind is already installed"
           fi
+          kind version
           
           echo "All dependencies installed successfully"
         EOF
@@ -138,35 +178,43 @@ jobs:
     - name: Copy Kind config to VM and create cluster
       run: |
         # Copy kind config to VM
-        scp -i ~/.ssh/vm_key -o StrictHostKeyChecking=no kind-config.yaml ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }}:~/
+        scp -i ~/.ssh/vm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 kind-config.yaml ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }}:~/
         
         # Create Kind cluster on VM
-        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} << 'EOF'
+        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} << 'EOF'
           set -e
           
           # Check if cluster already exists
-          if kind get clusters | grep -q "^${{ github.event.inputs.cluster_name }}$"; then
+          if kind get clusters 2>/dev/null | grep -q "^${{ github.event.inputs.cluster_name }}$"; then
             echo "Cluster ${{ github.event.inputs.cluster_name }} already exists, deleting it first..."
-            kind delete cluster --name ${{ github.event.inputs.cluster_name }}
+            kind delete cluster --name ${{ github.event.inputs.cluster_name }} || true
+            sleep 10
           fi
           
           echo "Creating Kind cluster: ${{ github.event.inputs.cluster_name }}"
-          kind create cluster --config kind-config.yaml --wait 300s
           
+          # Use newgrp to ensure docker group membership is active
+          newgrp docker << 'DOCKER_EOF'
+          kind create cluster --config kind-config.yaml --wait 300s
           echo "Cluster created successfully"
           kubectl cluster-info --context kind-${{ github.event.inputs.cluster_name }}
+        DOCKER_EOF
         EOF
 
     - name: Get kubeconfig from VM
       run: |
         # Get kubeconfig from VM
-        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} "kind get kubeconfig --name ${{ github.event.inputs.cluster_name }}" > kubeconfig-temp.yaml
+        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} "newgrp docker << 'DOCKER_EOF'
+        kind get kubeconfig --name ${{ github.event.inputs.cluster_name }}
+        DOCKER_EOF" > kubeconfig-temp.yaml
         
         # Modify kubeconfig to use VM's external IP
         sed -i "s/127.0.0.1/${{ github.event.inputs.vm_host }}/g" kubeconfig-temp.yaml
         sed -i "s/0.0.0.0/${{ github.event.inputs.vm_host }}/g" kubeconfig-temp.yaml
         
         echo "Modified kubeconfig to use external VM IP"
+        echo "Kubeconfig content:"
+        cat kubeconfig-temp.yaml
 
     - name: Test cluster connectivity
       run: |
