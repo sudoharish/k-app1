@@ -281,8 +281,8 @@ jobs:
     - name: Install tweetsodium
       run: npm install tweetsodium
 
-    # --- Environment creation ---
-    - name: Create GitHub Environment
+    # --- Ensure Environment Exists ---
+    - name: Ensure GitHub Environment
       uses: actions/github-script@v7
       with:
         github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
@@ -294,7 +294,7 @@ jobs:
               repo: context.repo.repo,
               environment_name: envName
             });
-            console.log(`✅ Environment ${envName} already exists, skipping`);
+            console.log(`✅ Environment ${envName} already exists`);
           } catch (error) {
             if (error.status === 404) {
               await github.rest.repos.createOrUpdateEnvironment({
@@ -308,80 +308,54 @@ jobs:
             }
           }
 
-    - name: Set Variables (VM_USER, VM_HOST, CLUSTER_NAME, CLUSTER_ENDPOINT)
-      uses: actions/github-script@v7
+    # --- Store Secrets in Environment ---
+    - name: Set CLUSTER_NAME Secret
+      uses: gliech/create-github-secret-action@v1
       with:
-        github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-        script: |
-          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
-    
-          async function setVar(name, value) {
-            const query = `
-              mutation($repoId: ID!, $envName: String!, $name: String!, $value: String!) {
-                createEnvironmentVariable(input: {
-                  repositoryId: $repoId,
-                  environmentName: $envName,
-                  name: $name,
-                  value: $value
-                }) {
-                  environmentVariable {
-                    name
-                  }
-                }
-              }
-            `;
-    
-            await github.graphql(query, {
-              repoId: context.payload.repository.node_id,
-              envName,
-              name,
-              value
-            });
-            console.log(`✅ Variable ${name} set`);
-          }
-    
-          await setVar("CLUSTER_NAME", "${{ github.event.inputs.cluster_name }}");
-          await setVar("VM_USER", "${{ github.event.inputs.vm_user }}");
-          await setVar("VM_HOST", "${{ github.event.inputs.vm_host }}");
-          await setVar("CLUSTER_ENDPOINT", "https://${{ github.event.inputs.vm_host }}:6443");
+        name: CLUSTER_NAME
+        value: ${{ github.event.inputs.cluster_name }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
-
-    # --- Set Secrets ---
-    - name: Set Secrets (VM_KEY, KUBECONFIG)
-      uses: actions/github-script@v7
+    - name: Set VM_USER Secret
+      uses: gliech/create-github-secret-action@v1
       with:
-        github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-        script: |
-          const sodium = require("tweetsodium");
-          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
+        name: VM_USER
+        value: ${{ github.event.inputs.vm_user }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
-          async function setSecret(name, value) {
-            // 1. Get public key
-            const { data: pubKey } = await github.rest.actions.getEnvironmentPublicKey({
-              repository_id: context.payload.repository.id,
-              environment_name: envName
-            });
+    - name: Set VM_HOST Secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: VM_HOST
+        value: ${{ github.event.inputs.vm_host }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
-            // 2. Encrypt
-            const messageBytes = Buffer.from(value);
-            const keyBytes = Buffer.from(pubKey.key, "base64");
-            const encryptedBytes = sodium.seal(messageBytes, keyBytes);
-            const encryptedValue = Buffer.from(encryptedBytes).toString("base64");
+    - name: Set VM_KEY Secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: VM_KEY
+        value: ${{ github.event.inputs.vm_key }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
-            // 3. Store
-            await github.rest.actions.createOrUpdateEnvironmentSecret({
-              repository_id: context.payload.repository.id,
-              environment_name: envName,
-              secret_name: name,
-              encrypted_value: encryptedValue,
-              key_id: pubKey.key_id
-            });
-            console.log(`✅ Secret ${name} set`);
-          }
+    - name: Set KUBECONFIG Secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: KUBECONFIG
+        value: ${{ secrets.KUBECONFIG_CONTENT }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
-          await setSecret("VM_KEY", `${{ github.event.inputs.vm_key }}`);
-          await setSecret("KUBECONFIG", `${{ github.event.inputs.kubeconfig_content }}`);
-
+    - name: Set CLUSTER_ENDPOINT Secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: CLUSTER_ENDPOINT
+        value: https://${{ github.event.inputs.vm_host }}:6443
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
       
     - name: Cleanup
