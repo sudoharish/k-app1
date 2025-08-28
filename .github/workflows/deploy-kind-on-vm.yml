@@ -78,61 +78,67 @@ jobs:
             }
           }
 
-    - name: Create Environment Secrets
+    - name: Create Environment Secrets (VM Only)
       uses: actions/github-script@v7
       with:
         github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
         script: |
-          const vars = {
-            CLUSTER_NAME: process.env.CLUSTER_NAME,
-            VM_USER: process.env.VM_USER,
-            VM_HOST: process.env.VM_HOST,
-            VM_KEY: process.env.VM_KEY,
+          const sodium = require("tweetsodium");
+    
+          // Get repository ID
+          const repo = await github.rest.repos.get({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+          });
+          const repo_id = repo.data.id;
+    
+          // Dynamic environment name
+          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
+    
+          // Only VM-related secrets
+          const secretsToSet = {
+            CLUSTER_NAME: "${{ github.event.inputs.cluster_name }}",
+            VM_USER: "${{ github.event.inputs.vm_user }}",
+            VM_HOST: "${{ github.event.inputs.vm_host }}",
+            VM_KEY: "${{ github.event.inputs.vm_key }}"
           };
-
-          for (const [key, value] of Object.entries(vars)) {
-            if (!value) {
-              console.log(`⚠️ Skipping ${key}, value not provided`);
+    
+          for (const [secretName, secretValue] of Object.entries(secretsToSet)) {
+            if (!secretValue) {
+              console.log(`⚠️ Skipping ${secretName}, no value provided`);
               continue;
             }
-            console.log(`➡️ Creating secret: ${key}`);
-            await exec.exec('gh', [
-              'secret', 'set', key,
-              '--env', `ENV_${process.env.CLUSTER_NAME}`,
-              '--body', value,
-              '--repo', `${context.repo.owner}/${context.repo.repo}`
-            ]);
+    
+            // Get environment public key
+            const { data: key } = await github.request(
+              "GET /repositories/{repository_id}/environments/{environment_name}/secrets/public-key",
+              {
+                repository_id: repo_id,
+                environment_name: envName,
+              }
+            );
+    
+            // Encrypt secret
+            const messageBytes = Buffer.from(secretValue);
+            const keyBytes = Buffer.from(key.key, "base64");
+            const encryptedBytes = sodium.seal(messageBytes, keyBytes);
+            const encryptedValue = Buffer.from(encryptedBytes).toString("base64");
+    
+            // Upload secret
+            await github.request(
+              "PUT /repositories/{repository_id}/environments/{environment_name}/secrets/{secret_name}",
+              {
+                repository_id: repo_id,
+                environment_name: envName,
+                secret_name: secretName,
+                encrypted_value: encryptedValue,
+                key_id: key.key_id,
+              }
+            );
+    
+            console.log(`✅ Secret ${secretName} set in environment ${envName}`);
           }
-      env:
-        CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
-        VM_USER: ${{ github.event.inputs.vm_user }}
-        VM_HOST: ${{ github.event.inputs.vm_host }}
-        VM_KEY: ${{ github.event.inputs.vm_key }}
 
-
-    - name: Set VM_USER Secret
-      uses: gliech/create-github-secret-action@v1
-      with:
-        name: VM_USER
-        value: ${{ github.event.inputs.vm_user }}
-        location: env:ENV_${{ github.event.inputs.cluster_name }}
-        pa_token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-
-    - name: Set VM_HOST Secret
-      uses: gliech/create-github-secret-action@v1
-      with:
-        name: VM_HOST
-        value: ${{ github.event.inputs.vm_host }}
-        location: env:ENV_${{ github.event.inputs.cluster_name }}
-        pa_token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-
-    - name: Set VM_KEY Secret
-      uses: gliech/create-github-secret-action@v1
-      with:
-        name: VM_KEY
-        value: ${{ github.event.inputs.vm_key }}
-        location: env:ENV_${{ github.event.inputs.cluster_name }}
-        pa_token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
 
 
           
@@ -382,9 +388,10 @@ jobs:
           // dynamic environment name (example: input cluster_name -> ENV_dev7)
           const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
     
-          // define only required secrets
+          // define secrets dynamically
           const secretsToSet = {
-            KUBECONFIG: process.env.KUBECONFIG_CONTENT, // repo-level secret
+            CLUSTER_NAME: "${{ github.event.inputs.cluster_name }}",
+            KUBECONFIG: process.env.KUBECONFIG_CONTENT,
             CLUSTER_ENDPOINT: `https://${{ github.event.inputs.vm_host }}:6443`
           };
     
@@ -396,7 +403,7 @@ jobs:
               continue;
             }
     
-            // Get public key for this environment
+            // Get public key for environment
             const { data: key } = await github.request(
               "GET /repositories/{repository_id}/environments/{environment_name}/secrets/public-key",
               {
@@ -405,13 +412,13 @@ jobs:
               }
             );
     
-            // Encrypt secret with sodium
+            // Encrypt
             const messageBytes = Buffer.from(secretValue);
             const keyBytes = Buffer.from(key.key, "base64");
             const encryptedBytes = sodium.seal(messageBytes, keyBytes);
             const encryptedValue = Buffer.from(encryptedBytes).toString("base64");
     
-            // Upload secret
+            // Upload
             await github.request(
               "PUT /repositories/{repository_id}/environments/{environment_name}/secrets/{secret_name}",
               {
@@ -425,7 +432,6 @@ jobs:
     
             console.log(`✅ Secret ${secretName} set in environment ${envName}`);
           }
-
 
       
     - name: Cleanup
