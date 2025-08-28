@@ -1,140 +1,120 @@
-name: Provision Kind Cluster on Remote VM
+name: Provision Kind Cluster on VM
 
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Target environment (will use environment variables and secrets)'
-        required: true
-        type: string
       cluster_name:
-        description: 'Kind cluster name'
+        description: 'Name of the Kind cluster'
         required: true
         type: string
-
-env:
-  # Use the cluster name provided by the user
-  CLUSTER_NAME: ${{ inputs.cluster_name }}
+      vm_user:
+        description: 'VM SSH username'
+        required: true
+        type: string
+      vm_key:
+        description: 'VM SSH private key'
+        required: true
+        type: string
+      vm_host:
+        description: 'VM IP address or hostname'
+        required: true
+        type: string
 
 jobs:
   provision-kind-cluster:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
     
     steps:
-    - name: Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Validate environment variables
+    - name: Validate inputs
       run: |
-        echo "Using environment: ${{ inputs.environment }}"
-        echo "Cluster name: ${{ inputs.cluster_name }}"
-        echo "VM Host: ${{ vars.VM_HOST }}"
-        echo "VM User: ${{ vars.VM_USER }}"
-        
-        # Check required variables are set
-        if [ -z "${{ vars.VM_HOST }}" ]; then
-          echo "❌ VM_HOST environment variable is not set"
+        if [[ -z "${{ github.event.inputs.cluster_name }}" ]]; then
+          echo "Error: cluster_name is required"
           exit 1
         fi
-        if [ -z "${{ vars.VM_USER }}" ]; then
-          echo "❌ VM_USER environment variable is not set"  
+        if [[ -z "${{ github.event.inputs.vm_user }}" ]]; then
+          echo "Error: vm_user is required"
           exit 1
         fi
-        echo "✅ All required environment variables are configured"
+        if [[ -z "${{ github.event.inputs.vm_host }}" ]]; then
+          echo "Error: vm_host is required"
+          exit 1
+        fi
+        # Validate cluster name format (alphanumeric and hyphens only)
+        if [[ ! "${{ github.event.inputs.cluster_name }}" =~ ^[a-zA-Z0-9-]+$ ]]; then
+          echo "Error: cluster_name must contain only alphanumeric characters and hyphens"
+          exit 1
+        fi
 
     - name: Setup SSH key
       run: |
         mkdir -p ~/.ssh
-        echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -H ${{ vars.VM_HOST }} >> ~/.ssh/known_hosts
+        echo "${{ github.event.inputs.vm_key }}" > ~/.ssh/vm_key
+        chmod 600 ~/.ssh/vm_key
+        ssh-keyscan -H ${{ github.event.inputs.vm_host }} >> ~/.ssh/known_hosts
 
     - name: Test SSH connection
       run: |
-        ssh -o ConnectTimeout=10 ${{ vars.VM_USER }}@${{ vars.VM_HOST }} "echo 'SSH connection successful'"
+        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} "echo 'SSH connection successful'"
 
-    - name: Install Docker and Kind on VM
+    - name: Install dependencies on VM
       run: |
-        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << 'EOF'
-        # Update system
-        sudo apt-get update
-        
-        # Install Docker if not already installed
-        if ! command -v docker &> /dev/null; then
-          echo "Installing Docker..."
-          sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} << 'EOF'
+          set -e
+          
+          echo "Updating system packages..."
           sudo apt-get update
-          sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-          sudo usermod -aG docker $USER
-        else
-          echo "Docker is already installed"
-        fi
-        
-        # Install kubectl if not already installed
-        if ! command -v kubectl &> /dev/null; then
-          echo "Installing kubectl..."
-          ARCH=$(dpkg --print-architecture)
-          case $ARCH in
-            amd64)
-              KUBECTL_ARCH="amd64"
-              ;;
-            arm64)
-              KUBECTL_ARCH="arm64"
-              ;;
-            armhf)
-              KUBECTL_ARCH="arm"
-              ;;
-            *)
-              echo "Unsupported architecture: $ARCH"
-              exit 1
-              ;;
-          esac
-          echo "Detected architecture: $ARCH, downloading kubectl for: $KUBECTL_ARCH"
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${KUBECTL_ARCH}/kubectl"
-          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          rm kubectl
-        else
-          echo "kubectl is already installed"
-        fi
-        
-        # Install Kind if not already installed
-        if ! command -v kind &> /dev/null; then
-          echo "Installing Kind..."
-          ARCH=$(dpkg --print-architecture)
-          case $ARCH in
-            amd64)
-              KIND_ARCH="amd64"
-              ;;
-            arm64)
-              KIND_ARCH="arm64"
-              ;;
-            armhf)
-              KIND_ARCH="arm64"
-              ;;
-            *)
-              echo "Unsupported architecture: $ARCH"
-              exit 1
-              ;;
-          esac
-          echo "Detected architecture: $ARCH, downloading kind for: $KIND_ARCH"
-          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-${KIND_ARCH}"
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-        else
-          echo "Kind is already installed"
-        fi
+          
+          # Install Docker if not already installed
+          if ! command -v docker &> /dev/null; then
+            echo "Installing Docker..."
+            sudo apt-get install -y ca-certificates curl gnupg lsb-release
+            sudo mkdir -p /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+            sudo usermod -aG docker $USER
+            sudo systemctl enable docker
+            sudo systemctl start docker
+          else
+            echo "Docker is already installed"
+          fi
+          
+          # Install kubectl if not already installed
+          if ! command -v kubectl &> /dev/null; then
+            echo "Installing kubectl..."
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/
+          else
+            echo "kubectl is already installed"
+          fi
+          
+          # Install Kind if not already installed
+          if ! command -v kind &> /dev/null; then
+            echo "Installing Kind..."
+            curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+            chmod +x ./kind
+            sudo mv ./kind /usr/local/bin/kind
+          else
+            echo "Kind is already installed"
+          fi
+          
+          echo "All dependencies installed successfully"
         EOF
 
     - name: Create Kind cluster configuration
       run: |
-        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
-        cat > kind-config.yaml << 'YAML_EOF'
+        cat > kind-config.yaml << EOF
         kind: Cluster
         apiVersion: kind.x-k8s.io/v1alpha4
-        name: ${{ env.CLUSTER_NAME }}
+        name: ${{ github.event.inputs.cluster_name }}
+        networking:
+          apiServerAddress: "0.0.0.0"
+          apiServerPort: 6443
         nodes:
         - role: control-plane
           kubeadmConfigPatches:
@@ -150,101 +130,193 @@ jobs:
           - containerPort: 443
             hostPort: 443
             protocol: TCP
-        - role: worker
-        - role: worker
-        YAML_EOF
+          - containerPort: 6443
+            hostPort: 6443
+            protocol: TCP
         EOF
 
-    - name: Delete existing cluster (if exists)
+    - name: Copy Kind config to VM and create cluster
       run: |
-        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
-        if kind get clusters | grep -q "^${{ env.CLUSTER_NAME }}$"; then
-          echo "Deleting existing cluster: ${{ env.CLUSTER_NAME }}"
-          kind delete cluster --name ${{ env.CLUSTER_NAME }}
-        else
-          echo "No existing cluster found with name: ${{ env.CLUSTER_NAME }}"
-        fi
+        # Copy kind config to VM
+        scp -i ~/.ssh/vm_key -o StrictHostKeyChecking=no kind-config.yaml ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }}:~/
+        
+        # Create Kind cluster on VM
+        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} << 'EOF'
+          set -e
+          
+          # Check if cluster already exists
+          if kind get clusters | grep -q "^${{ github.event.inputs.cluster_name }}$"; then
+            echo "Cluster ${{ github.event.inputs.cluster_name }} already exists, deleting it first..."
+            kind delete cluster --name ${{ github.event.inputs.cluster_name }}
+          fi
+          
+          echo "Creating Kind cluster: ${{ github.event.inputs.cluster_name }}"
+          kind create cluster --config kind-config.yaml --wait 300s
+          
+          echo "Cluster created successfully"
+          kubectl cluster-info --context kind-${{ github.event.inputs.cluster_name }}
         EOF
 
-    - name: Create Kind cluster
+    - name: Get kubeconfig from VM
       run: |
-        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
-        echo "Creating Kind cluster: ${{ env.CLUSTER_NAME }}"
-        kind create cluster --config kind-config.yaml --wait 300s
-        EOF
+        # Get kubeconfig from VM
+        ssh -i ~/.ssh/vm_key -o StrictHostKeyChecking=no ${{ github.event.inputs.vm_user }}@${{ github.event.inputs.vm_host }} "kind get kubeconfig --name ${{ github.event.inputs.cluster_name }}" > kubeconfig-temp.yaml
+        
+        # Modify kubeconfig to use VM's external IP
+        sed -i "s/127.0.0.1/${{ github.event.inputs.vm_host }}/g" kubeconfig-temp.yaml
+        sed -i "s/0.0.0.0/${{ github.event.inputs.vm_host }}/g" kubeconfig-temp.yaml
+        
+        echo "Modified kubeconfig to use external VM IP"
 
-    - name: Verify cluster and configure kubectl
+    - name: Test cluster connectivity
       run: |
-        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
-        # Set kubectl context to the new cluster
-        kubectl cluster-info --context kind-${{ env.CLUSTER_NAME }}
-        
-        # Verify nodes are ready
-        echo "Waiting for nodes to be ready..."
-        kubectl wait --for=condition=Ready nodes --all --timeout=300s --context kind-${{ env.CLUSTER_NAME }}
-        
-        # Display cluster information
-        echo "=== Cluster Information ==="
-        kubectl get nodes --context kind-${{ env.CLUSTER_NAME }}
-        kubectl get pods -A --context kind-${{ env.CLUSTER_NAME }}
-        
-        echo "=== Cluster successfully created with name: ${{ env.CLUSTER_NAME }} ==="
-        EOF
+        export KUBECONFIG=./kubeconfig-temp.yaml
+        kubectl cluster-info
+        kubectl get nodes
+        echo "Cluster is accessible from external network"
 
-    - name: Install basic cluster components (optional)
-      run: |
-        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << 'EOF'
-        # Install NGINX Ingress Controller
-        echo "Installing NGINX Ingress Controller..."
-        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml --context kind-${{ env.CLUSTER_NAME }}
-        
-        # Wait for ingress controller to be ready
-        kubectl wait --namespace ingress-nginx \
-          --for=condition=ready pod \
-          --selector=app.kubernetes.io/component=controller \
-          --timeout=90s \
-          --context kind-${{ env.CLUSTER_NAME }}
-        
-        echo "NGINX Ingress Controller installed successfully"
-        EOF
+    - name: Create GitHub Environment
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
+          
+          try {
+            // Try to get existing environment
+            await github.rest.repos.getEnvironment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              environment_name: envName
+            });
+            console.log(`Environment ${envName} already exists`);
+          } catch (error) {
+            if (error.status === 404) {
+              // Create new environment
+              await github.rest.repos.createOrUpdateEnvironment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                environment_name: envName,
+                wait_timer: 0,
+                prevent_self_review: false,
+                reviewers: null,
+                deployment_branch_policy: null
+              });
+              console.log(`Created environment: ${envName}`);
+            } else {
+              throw error;
+            }
+          }
 
-    - name: Save and configure kubeconfig
-      run: |
-        ssh ${{ vars.VM_USER }}@${{ vars.VM_HOST }} << EOF
-        # Create .kube directory if it doesn't exist
-        mkdir -p ~/.kube
-        
-        # Export kubeconfig for the cluster
-        kind get kubeconfig --name ${{ env.CLUSTER_NAME }} > ~/.kube/${{ env.CLUSTER_NAME }}-config
-        
-        # If KUBECONFIG environment variable is set, also save there
-        if [ -n "${{ vars.KUBECONFIG_PATH }}" ]; then
-          echo "Saving kubeconfig to custom path: ${{ vars.KUBECONFIG_PATH }}"
-          mkdir -p "$(dirname "${{ vars.KUBECONFIG_PATH }}")"
-          kind get kubeconfig --name ${{ env.CLUSTER_NAME }} > "${{ vars.KUBECONFIG_PATH }}"
-        fi
-        
-        # Set as default kubeconfig if specified
-        if [ "${{ vars.SET_DEFAULT_KUBECONFIG }}" = "true" ]; then
-          echo "Setting as default kubeconfig"
-          kind get kubeconfig --name ${{ env.CLUSTER_NAME }} > ~/.kube/config
-        fi
-        
-        echo "Kubeconfig saved to ~/.kube/${{ env.CLUSTER_NAME }}-config"
-        
-        # Display connection information
-        echo "=== Connection Information ==="
-        echo "Environment: ${{ inputs.environment }}"
-        echo "VM Host: ${{ vars.VM_HOST }}"
-        echo "Cluster Name: ${{ env.CLUSTER_NAME }}"
-        echo "Context: kind-${{ env.CLUSTER_NAME }}"
-        echo "Kubeconfig: ~/.kube/${{ env.CLUSTER_NAME }}-config"
-        if [ -n "${{ vars.KUBECONFIG_PATH }}" ]; then
-          echo "Custom Kubeconfig: ${{ vars.KUBECONFIG_PATH }}"
-        fi
-        EOF
+    - name: Set environment variables and secrets
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const fs = require('fs');
+          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
+          
+          // Read kubeconfig content
+          const kubeconfigContent = fs.readFileSync('./kubeconfig-temp.yaml', 'utf8');
+          
+          // Function to create/update environment secret
+          async function createSecret(secretName, secretValue) {
+            try {
+              // Get public key for encryption
+              const publicKeyResponse = await github.rest.actions.getEnvironmentPublicKey({
+                repository_id: context.payload.repository.id,
+                environment_name: envName
+              });
+              
+              // Encrypt the secret value
+              const sodium = require('tweetsodium');
+              const key = publicKeyResponse.data.key;
+              const keyBytes = Buffer.from(key, 'base64');
+              const messageBytes = Buffer.from(secretValue);
+              const encryptedBytes = sodium.seal(messageBytes, keyBytes);
+              const encrypted = Buffer.from(encryptedBytes).toString('base64');
+              
+              // Create or update the secret
+              await github.rest.actions.createOrUpdateEnvironmentSecret({
+                repository_id: context.payload.repository.id,
+                environment_name: envName,
+                secret_name: secretName,
+                encrypted_value: encrypted,
+                key_id: publicKeyResponse.data.key_id
+              });
+              
+              console.log(`Set secret: ${secretName}`);
+            } catch (error) {
+              console.error(`Failed to set secret ${secretName}:`, error.message);
+              throw error;
+            }
+          }
+          
+          // Function to create/update environment variable
+          async function createVariable(variableName, variableValue) {
+            try {
+              await github.rest.actions.createEnvironmentVariable({
+                repository_id: context.payload.repository.id,
+                environment_name: envName,
+                name: variableName,
+                value: variableValue
+              });
+              console.log(`Set variable: ${variableName}`);
+            } catch (error) {
+              if (error.status === 409) {
+                // Variable exists, update it
+                await github.rest.actions.updateEnvironmentVariable({
+                  repository_id: context.payload.repository.id,
+                  environment_name: envName,
+                  name: variableName,
+                  value: variableValue
+                });
+                console.log(`Updated variable: ${variableName}`);
+              } else {
+                console.error(`Failed to set variable ${variableName}:`, error.message);
+                throw error;
+              }
+            }
+          }
+          
+          // Set secrets (sensitive data)
+          await createSecret('VM_KEY', '${{ github.event.inputs.vm_key }}');
+          await createSecret('KUBECONFIG', kubeconfigContent);
+          
+          // Set variables (non-sensitive data)
+          await createVariable('CLUSTER_NAME', '${{ github.event.inputs.cluster_name }}');
+          await createVariable('VM_USER', '${{ github.event.inputs.vm_user }}');
+          await createVariable('VM_HOST', '${{ github.event.inputs.vm_host }}');
+          await createVariable('CLUSTER_ENDPOINT', `https://${{ github.event.inputs.vm_host }}:6443`);
 
-    - name: Cleanup SSH
+    - name: Install tweetsodium dependency
+      run: npm install tweetsodium
+      
+    - name: Cleanup
       if: always()
       run: |
-        rm -f ~/.ssh/id_rsa
+        rm -f ~/.ssh/vm_key
+        rm -f kubeconfig-temp.yaml
+        rm -f kind-config.yaml
+
+    - name: Summary
+      run: |
+        echo "## Kind Cluster Provision Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Cluster Name**: ${{ github.event.inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **VM Host**: ${{ github.event.inputs.vm_host }}" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **VM User**: ${{ github.event.inputs.vm_user }}" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Environment Created**: ENV_${{ github.event.inputs.cluster_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Cluster Endpoint**: https://${{ github.event.inputs.vm_host }}:6443" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Environment Variables Set:" >> $GITHUB_STEP_SUMMARY
+        echo "- CLUSTER_NAME" >> $GITHUB_STEP_SUMMARY
+        echo "- VM_USER" >> $GITHUB_STEP_SUMMARY  
+        echo "- VM_HOST" >> $GITHUB_STEP_SUMMARY
+        echo "- CLUSTER_ENDPOINT" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Environment Secrets Set:" >> $GITHUB_STEP_SUMMARY
+        echo "- VM_KEY" >> $GITHUB_STEP_SUMMARY
+        echo "- KUBECONFIG" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🎉 **Kind cluster provisioned successfully!**"
