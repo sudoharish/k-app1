@@ -216,7 +216,7 @@ jobs:
             hostPort: 443
             protocol: TCP
           - containerPort: 6443
-            hostPort: 6443
+            hostPort: 16443
             protocol: TCP
         EOF
 
