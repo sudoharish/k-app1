@@ -271,7 +271,7 @@ jobs:
 
     - name: Test cluster connectivity
       run: |
-        kubectl cluster-info --context kind-${{ github.event.inputs.cluster_name }}
+        # kubectl cluster-info --context kind-${{ github.event.inputs.cluster_name }}
         export KUBECONFIG=./kubeconfig-temp.yaml
         kubectl cluster-info
         kubectl get nodes
