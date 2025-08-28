@@ -249,7 +249,6 @@ jobs:
           newgrp docker << 'DOCKER_EOF'
           kind create cluster --config kind-config.yaml --wait 300s
           echo "Cluster created successfully"
-          kubectl cluster-info --context kind-${{ github.event.inputs.cluster_name }}
         DOCKER_EOF
         EOF
 
@@ -265,12 +264,14 @@ jobs:
         sed -i "s/127.0.0.1/${{ github.event.inputs.vm_host }}/g" kubeconfig-temp.yaml
         sed -i "s/0.0.0.0/${{ github.event.inputs.vm_host }}/g" kubeconfig-temp.yaml
         
+        
         echo "Modified kubeconfig to use external VM IP"
         echo "Kubeconfig content:"
         cat kubeconfig-temp.yaml
 
     - name: Test cluster connectivity
       run: |
+        kubectl cluster-info --context kind-${{ github.event.inputs.cluster_name }}
         export KUBECONFIG=./kubeconfig-temp.yaml
         kubectl cluster-info
         kubectl get nodes
