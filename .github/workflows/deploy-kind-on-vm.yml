@@ -276,102 +276,102 @@ jobs:
         kubectl cluster-info
         kubectl get nodes
         echo "Cluster is accessible from external network"
-
-# --- Environment creation ---
-- name: Create GitHub Environment
-  uses: actions/github-script@v7
-  with:
-    github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-    script: |
-      const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
-      try {
-        await github.rest.repos.getEnvironment({
-          owner: context.repo.owner,
-          repo: context.repo.repo,
-          environment_name: envName
-        });
-        console.log(`Environment ${envName} already exists, skipping`);
-      } catch (error) {
-        if (error.status === 404) {
-          await github.rest.repos.createOrUpdateEnvironment({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            environment_name: envName
-          });
-          console.log(`Created environment: ${envName}`);
-        } else {
-          throw error;
-        }
-      }
-
-# --- Set Variables ---
-- name: Set Variables (VM_USER, VM_HOST, CLUSTER_NAME)
-  uses: actions/github-script@v7
-  with:
-    github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-    script: |
-      const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
-      async function setVariable(name, value) {
-        try {
-          await github.rest.actions.createEnvironmentVariable({
-            repository_id: context.payload.repository.id,
-            environment_name: envName,
-            name, value
-          });
-          console.log(`Created variable ${name}`);
-        } catch (error) {
-          if (error.status === 409) {
-            console.log(`Variable ${name} already exists, skipping`);
-          } else {
-            throw error;
+        
+      # --- Environment creation ---
+    - name: Create GitHub Environment
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+        script: |
+          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
+          try {
+            await github.rest.repos.getEnvironment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              environment_name: envName
+            });
+            console.log(`Environment ${envName} already exists, skipping`);
+          } catch (error) {
+            if (error.status === 404) {
+              await github.rest.repos.createOrUpdateEnvironment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                environment_name: envName
+              });
+              console.log(`Created environment: ${envName}`);
+            } else {
+              throw error;
+            }
           }
-        }
-      }
-
-      await setVariable("CLUSTER_NAME", "${{ github.event.inputs.cluster_name }}");
-      await setVariable("VM_USER", "${{ github.event.inputs.vm_user }}");
-      await setVariable("VM_HOST", "${{ github.event.inputs.vm_host }}");
-
-# --- Set Secrets (VM_KEY early) ---
-- name: Set Secret VM_KEY
-  uses: gliech/create-github-secret-action@v1
-  with:
-    name: VM_KEY
-    value: ${{ github.event.inputs.vm_key }}
-    environment: ENV_${{ github.event.inputs.cluster_name }}
-    token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-
-# ... later after kind get kubeconfig ...
-- name: Set KUBECONFIG secret
-  uses: gliech/create-github-secret-action@v1
-  with:
-    name: KUBECONFIG
-    value: ${{ secrets.KUBECONFIG_CONTENT }}
-    environment: ENV_${{ github.event.inputs.cluster_name }}
-    token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-
-- name: Set CLUSTER_ENDPOINT variable
-  uses: actions/github-script@v7
-  with:
-    github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
-    script: |
-      const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
-      try {
-        await github.rest.actions.createEnvironmentVariable({
-          repository_id: context.payload.repository.id,
-          environment_name: envName,
-          name: "CLUSTER_ENDPOINT",
-          value: "https://${{ github.event.inputs.vm_host }}:6443"
-        });
-        console.log("Created variable CLUSTER_ENDPOINT");
-      } catch (error) {
-        if (error.status === 409) {
-          console.log("CLUSTER_ENDPOINT already exists, skipping");
-        } else {
-          throw error;
-        }
-      }
-
+    
+    # --- Set Variables ---
+    - name: Set Variables (VM_USER, VM_HOST, CLUSTER_NAME)
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+        script: |
+          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
+          async function setVariable(name, value) {
+            try {
+              await github.rest.actions.createEnvironmentVariable({
+                repository_id: context.payload.repository.id,
+                environment_name: envName,
+                name, value
+              });
+              console.log(`Created variable ${name}`);
+            } catch (error) {
+              if (error.status === 409) {
+                console.log(`Variable ${name} already exists, skipping`);
+              } else {
+                throw error;
+              }
+            }
+          }
+    
+          await setVariable("CLUSTER_NAME", "${{ github.event.inputs.cluster_name }}");
+          await setVariable("VM_USER", "${{ github.event.inputs.vm_user }}");
+          await setVariable("VM_HOST", "${{ github.event.inputs.vm_host }}");
+    
+      # --- Set Secrets (VM_KEY early) ---
+    - name: Set Secret VM_KEY
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: VM_KEY
+        value: ${{ github.event.inputs.vm_key }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+    
+      # ... later after kind get kubeconfig ...
+    - name: Set KUBECONFIG secret
+      uses: gliech/create-github-secret-action@v1
+      with:
+        name: KUBECONFIG
+        value: ${{ secrets.KUBECONFIG_CONTENT }}
+        environment: ENV_${{ github.event.inputs.cluster_name }}
+        token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+    
+    - name: Set CLUSTER_ENDPOINT variable
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.AUTO_DEPLOY_TOKEN }}
+        script: |
+          const envName = `ENV_${{ github.event.inputs.cluster_name }}`;
+          try {
+            await github.rest.actions.createEnvironmentVariable({
+              repository_id: context.payload.repository.id,
+              environment_name: envName,
+              name: "CLUSTER_ENDPOINT",
+              value: "https://${{ github.event.inputs.vm_host }}:6443"
+            });
+            console.log("Created variable CLUSTER_ENDPOINT");
+          } catch (error) {
+            if (error.status === 409) {
+              console.log("CLUSTER_ENDPOINT already exists, skipping");
+            } else {
+              throw error;
+            }
+          }
+  
 
       
     - name: Cleanup
