@@ -51,14 +51,59 @@ jobs:
     - name: Setup SSH key
       run: |
         mkdir -p ~/.ssh
-        # Write the SSH key with proper formatting
-        printf '%s\n' "${{ github.event.inputs.vm_key }}" > ~/.ssh/vm_key
+        
+        # Create SSH key file using base64 to handle special characters
+        echo '${{ github.event.inputs.vm_key }}' | base64 -d > ~/.ssh/vm_key 2>/dev/null || {
+          # If base64 decode fails, treat as regular text
+          cat << 'EOF' > ~/.ssh/vm_key
+        ${{ github.event.inputs.vm_key }}
+        EOF
+        }
+        
         # Ensure proper permissions
         chmod 600 ~/.ssh/vm_key
+        
+        # Debug: Show key format
+        echo "SSH key file created. First few lines:"
+        head -3 ~/.ssh/vm_key
+        echo "Last few lines:"
+        tail -3 ~/.ssh/vm_key
+        
         # Verify key format
-        ssh-keygen -l -f ~/.ssh/vm_key || (echo "Invalid SSH key format" && exit 1)
+        echo "Verifying SSH key format..."
+        if ssh-keygen -l -f ~/.ssh/vm_key; then
+          echo "SSH key format is valid"
+        else
+          echo "SSH key format verification failed. Attempting to fix format..."
+          
+          # Try to fix common formatting issues
+          temp_key=$(cat ~/.ssh/vm_key | tr -d '\r' | tr -s ' ' | sed 's/- /-/g')
+          
+          # Check if it contains the key headers
+          if echo "$temp_key" | grep -q "BEGIN.*PRIVATE KEY"; then
+            echo "$temp_key" > ~/.ssh/vm_key
+            chmod 600 ~/.ssh/vm_key
+            
+            # Try verification again
+            if ssh-keygen -l -f ~/.ssh/vm_key; then
+              echo "SSH key format fixed and verified"
+            else
+              echo "Error: Could not fix SSH key format"
+              echo "Please ensure your SSH private key is properly formatted"
+              echo "Expected format example:"
+              echo "-----BEGIN RSA PRIVATE KEY-----"
+              echo "MIICXAIBAAKBgQC..."
+              echo "-----END RSA PRIVATE KEY-----"
+              exit 1
+            fi
+          else
+            echo "Error: SSH key does not contain proper headers"
+            exit 1
+          fi
+        fi
+        
         # Add host to known_hosts
-        ssh-keyscan -H ${{ github.event.inputs.vm_host }} >> ~/.ssh/known_hosts || echo "Warning: Could not add host to known_hosts"
+        ssh-keyscan -H ${{ github.event.inputs.vm_host }} >> ~/.ssh/known_hosts 2>/dev/null || echo "Warning: Could not add host to known_hosts"
 
     - name: Test SSH connection
       run: |
