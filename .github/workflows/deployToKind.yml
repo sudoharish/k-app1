@@ -22,9 +22,10 @@ jobs:
           mkdir -p $HOME/.kube
           echo "${{ secrets.KUBECONFIG }}" > $HOME/.kube/config
           chmod 600 $HOME/.kube/config
+          ls -la
 
       - name: Verify cluster access
         run: kubectl cluster-info
 
       - name: Apply manifests
-        run: kubectl apply -f k-app1/my-public-ip.yml
+        run: kubectl apply -f my-public-ip.yml
