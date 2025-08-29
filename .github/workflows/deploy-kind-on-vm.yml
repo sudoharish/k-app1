@@ -371,9 +371,15 @@ jobs:
         kubectl cluster-info
         kubectl get nodes
         echo "Cluster is accessible from external network"
-        
-
-
+    - name: Ingress install
+      run: |
+        # kubectl cluster-info --context kind-${{ github.event.inputs.cluster_name }}
+        export KUBECONFIG=./kubeconfig-temp.yaml
+        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/kind/deploy.yaml
+        # cpu limit patch
+        kubectl -n ingress-nginx patch deployment ingress-nginx-controller --type='json'-p='[{"op": "remove", "path": "/spec/template/spec/containers/0/resources"}]'
+        echo "Cluster is accessible from external network"
+      
     - name: Set KUBECONFIG as Environment Secret
       uses: actions/github-script@v7
       with:
