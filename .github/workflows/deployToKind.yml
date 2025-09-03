@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target environment (e.g. ENV_dev7)"
+        description: "Target environment (e.g. dev7)"
         required: true
         type: string
 
